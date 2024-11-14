@@ -1,11 +1,13 @@
 package com.example.findpokemons
 
+// Importaciones necesarias
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.os.Looper
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -26,35 +29,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.*
 import androidx.core.content.ContextCompat
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.text.style.TextAlign
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.*
 
-data class ImageWithLocation(val image: Bitmap, val location: String)
+data class ImageWithLocation(val image: Bitmap, var location: String)
 
 class MainActivity : ComponentActivity() {
-
-    private val requestLocationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted: Boolean ->
-        // Puedes manejar la respuesta del permiso aquí si lo deseas
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Solicitar permiso de ubicación si no está concedido
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestLocationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-
         setContent {
             FindPokemonsApp()
         }
@@ -79,10 +63,76 @@ fun CameraScreen() {
     val imageList = remember { mutableStateListOf<ImageWithLocation>() }
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+    // Configuración para solicitar actualizaciones de ubicación
+    val locationRequest = remember {
+        LocationRequest.create().apply {
+            interval = 10000
+            fastestInterval = 5000
+            priority = Priority.PRIORITY_HIGH_ACCURACY
+            maxWaitTime = 15000
+        }
+    }
+
+    // Callback para recibir actualizaciones de ubicación
+    val locationCallback = remember {
+        object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                val location = locationResult.lastLocation
+                val locationText = if (location != null) {
+                    "Lat: ${location.latitude}, Lon: ${location.longitude}"
+                } else {
+                    "Ubicación no disponible"
+                }
+                // Actualizar la última imagen con la nueva ubicación
+                if (imageList.isNotEmpty()) {
+                    val lastImage = imageList.last()
+                    lastImage.location = locationText
+                }
+                // Detener las actualizaciones de ubicación después de obtenerla
+                fusedLocationClient.removeLocationUpdates(this)
+            }
+        }
+    }
+
+    // Lanzador para solicitar el permiso de ubicación si no está concedido
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                if (location != null) {
+                    val locationText = "Lat: ${location.latitude}, Lon: ${location.longitude}"
+                    if (imageList.isNotEmpty()) {
+                        val lastImage = imageList.last()
+                        lastImage.location = locationText
+                    }
+                } else {
+                    fusedLocationClient.requestLocationUpdates(
+                        locationRequest,
+                        locationCallback,
+                        Looper.getMainLooper()
+                    )
+                }
+            }
+        } else {
+            // Manejar el caso en que el permiso no fue concedido
+            if (imageList.isNotEmpty()) {
+                val lastImage = imageList.last()
+                lastImage.location = "Permiso de ubicación denegado"
+            }
+        }
+    }
+
+    // Lanzador para iniciar la actividad de la cámara y manejar el resultado
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val imageBitmap = result.data?.extras?.get("data") as? Bitmap
             imageBitmap?.let { bitmap ->
+                // Agregar imagen a la lista con mensaje temporal
+                imageList.add(ImageWithLocation(bitmap, "Permiso de ubicación no concedido"))
+
                 // Verificar si el permiso de ubicación está concedido
                 if (ContextCompat.checkSelfPermission(
                         context,
@@ -90,30 +140,40 @@ fun CameraScreen() {
                     ) == PackageManager.PERMISSION_GRANTED
                 ) {
                     fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                        val locationText = if (location != null) {
-                            "Lat: ${location.latitude}, Lon: ${location.longitude}"
+                        if (location != null) {
+                            val locationText = "Lat: ${location.latitude}, Lon: ${location.longitude}"
+                            if (imageList.isNotEmpty()) {
+                                val lastImage = imageList.last()
+                                lastImage.location = locationText
+                            }
                         } else {
-                            "Ubicación no disponible"
+                            // Solicitar actualizaciones de ubicación si lastLocation es null
+                            fusedLocationClient.requestLocationUpdates(
+                                locationRequest,
+                                locationCallback,
+                                Looper.getMainLooper()
+                            )
                         }
-                        // Agregar imagen y ubicación a la lista
-                        imageList.add(ImageWithLocation(bitmap, locationText))
                     }
                 } else {
-                    // Permiso no concedido, agregar imagen sin ubicación
-                    imageList.add(ImageWithLocation(bitmap, "Permiso de ubicación no concedido"))
+                    // Solicitar el permiso de ubicación
+                    locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                 }
             }
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
+    // Lanzador para solicitar el permiso de cámara y ubicación
+    val multiplePermissionsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val cameraGranted = permissions[Manifest.permission.CAMERA] ?: false
+
+        if (cameraGranted) {
             val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
             cameraLauncher.launch(cameraIntent)
         } else {
-            // Manejar el caso en que el permiso no fue concedido
+
         }
     }
 
@@ -134,17 +194,22 @@ fun CameraScreen() {
 
         Button(
             onClick = {
-                when (PackageManager.PERMISSION_GRANTED) {
-                    ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.CAMERA
-                    ) -> {
-                        val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                        cameraLauncher.launch(cameraIntent)
-                    }
-                    else -> {
-                        permissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
+                val cameraPermissionGranted = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+
+                if (cameraPermissionGranted) {
+                    val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                    cameraLauncher.launch(cameraIntent)
+                } else {
+                    // Solicitar permisos de cámara y ubicación
+                    multiplePermissionsLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                        )
+                    )
                 }
             },
             modifier = Modifier
